@@ -309,8 +309,10 @@ export function isTransient(err?: string): boolean {
 const TEMP_FILE = /\.(part(-Frag\d+)?|ytdl|ytdl-temp|download|temp)$/i
 const STAGING_DIR = /^\..+\.partial$/
 
-/** Remove leftovers from interrupted downloads (top level of the download dir only). */
-export async function cleanupTemps(dir: string): Promise<void> {
+/** Remove leftovers from interrupted downloads (top level of the download dir only).
+ *  Only touches entries untouched for 24h — a staging dir from a session that was
+ *  force-quit mid-zip still holds completed downloads the user may want. */
+export async function cleanupTemps(dir: string, maxAgeMs = 24 * 3600 * 1000): Promise<void> {
   let items
   try {
     items = await fsp.readdir(dir, { withFileTypes: true })
@@ -319,7 +321,11 @@ export async function cleanupTemps(dir: string): Promise<void> {
   }
   for (const it of items) {
     if (it.isDirectory() ? STAGING_DIR.test(it.name) : TEMP_FILE.test(it.name)) {
-      await fsp.rm(path.join(dir, it.name), { recursive: true, force: true }).catch(() => {})
+      const p = path.join(dir, it.name)
+      const st = await fsp.stat(p).catch(() => null)
+      if (st && Date.now() - st.mtimeMs > maxAgeMs) {
+        await fsp.rm(p, { recursive: true, force: true }).catch(() => {})
+      }
     }
   }
 }
@@ -470,7 +476,9 @@ export async function zipStaging(job: Job, emit: (p: Progress) => void): Promise
   if (files.length === 0) throw new Error('Nothing downloaded successfully — nothing to zip')
   const zipPath = uniquePath(path.join(job.dir, `${sanitizeName(job.meta.title)}.zip`))
   const zip = new yazl.ZipFile()
-  for (const f of files) zip.addFile(path.join(job.stagingDir, f), f)
+  // store, don't deflate: video/audio doesn't compress, and deflating GBs of mp4
+  // in single-threaded JS made big playlists look frozen at "Creating ZIP…"
+  for (const f of files) zip.addFile(path.join(job.stagingDir, f), f, { compress: false })
   zip.end()
   await pipeline(zip.outputStream, fs.createWriteStream(zipPath))
   await fsp.rm(job.stagingDir, { recursive: true, force: true })

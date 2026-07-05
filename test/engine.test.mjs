@@ -195,20 +195,29 @@ exec "${paths.ytdlp}" "$@"
   console.log(`OK retry cap: 4 attempts, backoff respected, playlist continued`)
 }
 
-// --- launch cleanup removes temp leftovers, keeps real files
+// --- launch cleanup removes OLD temp leftovers, keeps real files and fresh staging
 {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-clean-'))
+  const old = (Date.now() - 25 * 3600 * 1000) / 1000
   for (const f of ['a.mp4.part', 'b.part-Frag3', 'c.ytdl', 'd.temp', 'e.download']) {
-    fs.writeFileSync(path.join(dir, f), 'x')
+    const p = path.join(dir, f)
+    fs.writeFileSync(p, 'x')
+    fs.utimesSync(p, old, old) // abandoned yesterday
   }
   fs.mkdirSync(path.join(dir, '.Old Playlist.partial'))
   fs.writeFileSync(path.join(dir, '.Old Playlist.partial', 'file.mp4'), 'x')
+  fs.utimesSync(path.join(dir, '.Old Playlist.partial'), old, old)
   fs.writeFileSync(path.join(dir, 'keep.mp4'), 'x')
   fs.writeFileSync(path.join(dir, 'my.partial.notes.txt'), 'x') // not a temp suffix
+  // fresh staging from a session that was force-quit minutes ago: must survive
+  fs.mkdirSync(path.join(dir, '.Fresh Playlist.partial'))
+  fs.writeFileSync(path.join(dir, '.Fresh Playlist.partial', 'kept.mp4'), 'x')
+  fs.writeFileSync(path.join(dir, 'fresh.mp4.part'), 'x')
   await yt.cleanupTemps(dir)
-  assert.deepEqual(fs.readdirSync(dir).sort(), ['keep.mp4', 'my.partial.notes.txt'])
+  assert.deepEqual(fs.readdirSync(dir).sort(),
+    ['.Fresh Playlist.partial', 'fresh.mp4.part', 'keep.mp4', 'my.partial.notes.txt'])
   fs.rmSync(dir, { recursive: true, force: true })
-  console.log('OK cleanup: temp leftovers removed, real files kept')
+  console.log('OK cleanup: old temp leftovers removed, fresh staging and real files kept')
 }
 
 // --- zip never includes temp files
@@ -222,11 +231,12 @@ exec "${paths.ytdlp}" "$@"
     fs.writeFileSync(path.join(job.stagingDir, f), 'x')
   }
   const zipPath = await yt.zipStaging(job, () => {})
-  const listing = execSync(`unzip -l "${zipPath}"`).toString()
+  const listing = execSync(`unzip -v "${zipPath}"`).toString()
   assert.ok(listing.includes('001 - done.mp3'))
   for (const bad of ['.part', '.ytdl', '.temp']) assert.ok(!listing.includes(bad), `zip has no ${bad}`)
+  assert.ok(listing.includes('Stored'), 'entries stored, not deflated (big-playlist zip stall fix)')
   fs.rmSync(dir, { recursive: true, force: true })
-  console.log('OK zip hygiene: only completed files zipped')
+  console.log('OK zip hygiene: only completed files zipped, store mode')
 }
 
 // --- cancel mid-download
