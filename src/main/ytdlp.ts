@@ -34,10 +34,14 @@ export interface Meta {
   thumbnail: string
   count: number
   entries: Entry[]
+  /** playlist items yt-dlp reports as private/deleted/hidden — never downloaded */
+  unavailable: { id: string; reason: string }[]
+  /** summed duration of downloadable entries, for size estimation */
+  totalDuration: number
 }
 
 export interface Progress {
-  stage: 'starting' | 'downloading' | 'converting' | 'zipping'
+  stage: 'starting' | 'downloading' | 'converting' | 'zipping' | 'retrying'
   itemIndex: number
   itemCount: number
   itemTitle: string
@@ -46,6 +50,7 @@ export interface Progress {
   eta: number | null
   overallPercent: number
   downloadedBytes?: number
+  attempt?: number
 }
 
 export interface ItemResult {
@@ -147,13 +152,29 @@ export async function fetchInfo(paths: Paths, url: string, cookies: Cookies): Pr
           `"${info.id}". Refusing to download the wrong playlist.`
       )
     }
-    const entries: Entry[] = (info.entries ?? [])
-      .filter((e: unknown): e is Record<string, string> => !!e)
-      .map((e: Record<string, string>) => ({
-        id: e.id,
-        title: e.title ?? e.id,
-        url: e.url ?? `https://www.youtube.com/watch?v=${e.id}`
-      }))
+    // Flat entries for dead videos have a null title (or a "[Private video]"-style
+    // placeholder). They are surfaced separately and never enter the download queue.
+    const reasonOf = (title: unknown): string | null => {
+      if (title == null) return 'Unavailable'
+      const m = /^\[(Private|Deleted|Unavailable|Hidden)/i.exec(String(title))
+      return m ? m[1][0].toUpperCase() + m[1].slice(1).toLowerCase() : null
+    }
+    const entries: Entry[] = []
+    const unavailable: Meta['unavailable'] = []
+    let totalDuration = 0
+    for (const e of (info.entries ?? []).filter((x: unknown): x is Record<string, any> => !!x)) {
+      const reason = reasonOf(e.title)
+      if (reason) {
+        unavailable.push({ id: String(e.id ?? ''), reason })
+      } else {
+        entries.push({
+          id: e.id,
+          title: e.title ?? e.id,
+          url: e.url ?? `https://www.youtube.com/watch?v=${e.id}`
+        })
+        totalDuration += Number(e.duration ?? 0)
+      }
+    }
     if (entries.length === 0) throw new Error('Playlist is empty or its videos are hidden')
     return {
       kind: 'playlist',
@@ -165,7 +186,9 @@ export async function fetchInfo(paths: Paths, url: string, cookies: Cookies): Pr
       thumbnail:
         info.thumbnails?.at(-1)?.url ?? `https://i.ytimg.com/vi/${entries[0].id}/hqdefault.jpg`,
       count: entries.length,
-      entries
+      entries,
+      unavailable,
+      totalDuration
     }
   }
 
@@ -178,7 +201,9 @@ export async function fetchInfo(paths: Paths, url: string, cookies: Cookies): Pr
     duration: info.duration ?? 0,
     thumbnail: info.thumbnail ?? '',
     count: 1,
-    entries: [{ id: info.id, title: info.title ?? info.id, url }]
+    entries: [{ id: info.id, title: info.title ?? info.id, url }],
+    unavailable: [],
+    totalDuration: info.duration ?? 0
   }
 }
 
@@ -266,6 +291,39 @@ async function downloadOne(
   return { ok: true }
 }
 
+// ---------------------------------------------------------------- transient failures
+
+// Permanent wins over transient: "Video unavailable ... HTTP Error 410" must not retry.
+const PERMANENT =
+  /Private video|Video unavailable|no longer available|has been removed|copyright|terminated|members.only|Sign in|age.restricted|Incomplete YouTube ID|not a valid URL|Unsupported URL/i
+const TRANSIENT =
+  /HTTP Error|Connection re(set|fused)|ECONN|ETIMEDOUT|timed? ?out|Temporary failure|IncompleteRead|ContentTooShort|EOF occurred|network|getaddrinfo|SSL|unable to download/i
+
+export function isTransient(err?: string): boolean {
+  return !!err && !PERMANENT.test(err) && TRANSIENT.test(err)
+}
+
+// ---------------------------------------------------------------- temp-file hygiene
+
+// yt-dlp in-flight names (.part, .part-Frag3, .ytdl) plus other temp suffixes
+const TEMP_FILE = /\.(part(-Frag\d+)?|ytdl|ytdl-temp|download|temp)$/i
+const STAGING_DIR = /^\..+\.partial$/
+
+/** Remove leftovers from interrupted downloads (top level of the download dir only). */
+export async function cleanupTemps(dir: string): Promise<void> {
+  let items
+  try {
+    items = await fsp.readdir(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const it of items) {
+    if (it.isDirectory() ? STAGING_DIR.test(it.name) : TEMP_FILE.test(it.name)) {
+      await fsp.rm(path.join(dir, it.name), { recursive: true, force: true }).catch(() => {})
+    }
+  }
+}
+
 // ---------------------------------------------------------------- job orchestration
 
 export function sanitizeName(t: string): string {
@@ -332,7 +390,12 @@ export async function runJob(
     ? meta.entries.filter((e) => onlyIds.includes(e.id))
     : meta.entries
 
-  if (meta.kind === 'playlist') await fsp.mkdir(job.stagingDir, { recursive: true })
+  if (meta.kind === 'playlist') {
+    await fsp.mkdir(job.stagingDir, { recursive: true })
+    // dot-prefix does not hide folders on Windows — set the hidden attribute so
+    // in-flight staging never looks like a finished download
+    if (process.platform === 'win32') spawn('attrib', ['+h', job.stagingDir], { windowsHide: true })
+  }
 
   for (const entry of targets) {
     if (cancelled) break
@@ -350,17 +413,30 @@ export async function runJob(
       percent: 0, speed: null, eta: null,
       overallPercent: Math.round((100 * doneCount) / meta.count)
     })
-    const res = await downloadOne(
-      paths, entry.url, template, job.format, job.quality, job.cookies,
-      (p) =>
-        emit({
-          ...p,
-          itemIndex: idx + 1,
-          itemCount: meta.count,
-          itemTitle: entry.title,
-          overallPercent: Math.round((100 * (doneCount + p.percent / 100)) / meta.count)
-        })
-    )
+    const dl = (): ReturnType<typeof downloadOne> =>
+      downloadOne(
+        paths, entry.url, template, job.format, job.quality, job.cookies,
+        (p) =>
+          emit({
+            ...p,
+            itemIndex: idx + 1,
+            itemCount: meta.count,
+            itemTitle: entry.title,
+            overallPercent: Math.round((100 * (doneCount + p.percent / 100)) / meta.count)
+          })
+      )
+    let res = await dl()
+    // auto-retry transient network failures with backoff; hard cap of 3 retries
+    for (let attempt = 1; attempt <= 3 && !cancelled && !res.ok && isTransient(res.error); attempt++) {
+      emit({
+        stage: 'retrying', attempt, itemIndex: idx + 1, itemCount: meta.count,
+        itemTitle: entry.title, percent: 0, speed: null, eta: null,
+        overallPercent: Math.round((100 * doneCount) / meta.count)
+      })
+      await new Promise((r) => setTimeout(r, 1500 * 2 ** (attempt - 1)))
+      if (cancelled) break
+      res = await dl()
+    }
     job.results.set(entry.id, { id: entry.id, title: entry.title, ok: res.ok, error: res.error })
   }
 
@@ -389,7 +465,8 @@ export async function zipStaging(job: Job, emit: (p: Progress) => void): Promise
     stage: 'zipping', itemIndex: job.meta.count, itemCount: job.meta.count,
     itemTitle: '', percent: 100, speed: null, eta: null, overallPercent: 100
   })
-  const files = (await fsp.readdir(job.stagingDir)).filter((f) => !f.endsWith('.part')).sort()
+  // only completed files: yt-dlp temp names must never reach the ZIP
+  const files = (await fsp.readdir(job.stagingDir)).filter((f) => !TEMP_FILE.test(f)).sort()
   if (files.length === 0) throw new Error('Nothing downloaded successfully — nothing to zip')
   const zipPath = uniquePath(path.join(job.dir, `${sanitizeName(job.meta.title)}.zip`))
   const zip = new yazl.ZipFile()

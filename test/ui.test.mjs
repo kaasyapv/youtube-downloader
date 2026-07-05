@@ -36,8 +36,10 @@ const SHORT = 'https://www.youtube.com/shorts/MuzvDonoNRo' // Blender channel Sh
 await page.fill('input', SHORT)
 await page.waitForSelector('text=BLENDERHEADS', { timeout: 60000 })
 await page.waitForSelector('img[src^="https://i.ytimg.com"], img[src^="https://"]')
+await page.waitForSelector('text=Estimated Size')
+await page.waitForSelector('text=Estimated Free Space Required')
 await page.screenshot({ path: path.join(shots, '2-video-ready.png') })
-console.log('OK ui: Short metadata + thumbnail shown')
+console.log('OK ui: Short metadata + thumbnail + estimated size shown')
 
 // --- download through the UI, real progress, done state
 await page.click('button:has-text("Download MP4")')
@@ -57,6 +59,7 @@ await page.click('button:has-text("Download Another")')
 const PLAYLIST = 'https://www.youtube.com/playlist?list=PLpp5nYHZleJq2j-KcazFdrYafb9agDAWP'
 await page.fill('input', PLAYLIST)
 await page.waitForSelector('text=saved as one ZIP', { timeout: 60000 })
+await page.waitForSelector('text=Estimated Total Size')
 const body = await page.textContent('main')
 assert.ok(body.includes('PLpp5nYHZleJq2j-KcazFdrYafb9agDAWP'), 'exact playlist ID displayed')
 assert.ok(/\d+ videos/.test(body), 'video count displayed')

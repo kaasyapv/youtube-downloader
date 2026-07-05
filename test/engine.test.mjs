@@ -106,16 +106,154 @@ let events = []
   console.log('OK zip: partial zip contains 2 mp3s ->', path.basename(zipPath))
 }
 
+// --- unavailable playlist items: real playlist containing deleted/private videos
+{
+  const DEAD = 'https://www.youtube.com/playlist?list=PL63F0C78739B09958'
+  const dead = await yt.fetchInfo(paths, DEAD, none)
+  assert.ok(dead.unavailable.length >= 2, `found unavailable items (got ${dead.unavailable.length})`)
+  assert.ok(dead.unavailable.every((u) => u.reason.length > 0), 'each has a reason')
+  assert.equal(dead.count, dead.entries.length, 'count excludes unavailable items')
+  assert.ok(dead.entries.every((e) => e.title && !/^\[(Private|Deleted|Unavailable|Hidden)/i.test(e.title)),
+    'download queue has no dead entries')
+  assert.ok(dead.totalDuration > 1000, 'totalDuration summed for size estimate')
+  console.log(`OK unavailable: ${dead.unavailable.length} dead items excluded ` +
+    `(${dead.unavailable.map((u) => u.reason).join(', ')}), ${dead.count} downloadable`)
+}
+
+// --- transient-error classifier
+assert.ok(yt.isTransient('unable to download video data: HTTP Error 503: Service Unavailable'))
+assert.ok(yt.isTransient('Connection reset by peer'))
+assert.ok(yt.isTransient('The read operation timed out'))
+assert.ok(!yt.isTransient('Private video. Sign in if you have been granted access'))
+assert.ok(!yt.isTransient('Video unavailable. This video has been removed by the uploader'))
+assert.ok(!yt.isTransient('cancelled'))
+assert.ok(!yt.isTransient(undefined))
+console.log('OK classifier: transient vs permanent')
+
+// --- auto-retry: wrapper injects one transient HTTP failure, then real yt-dlp succeeds
+const SHORT = 'https://www.youtube.com/shorts/MuzvDonoNRo'
+const short = await yt.fetchInfo(paths, SHORT, none)
+{
+  const flag = path.join(tmp, 'failed-once')
+  const fake = path.join(tmp, 'fake-ytdlp')
+  fs.writeFileSync(fake, `#!/bin/sh
+if [ ! -f "${flag}" ]; then
+  touch "${flag}"
+  echo "ERROR: unable to download video data: HTTP Error 503: Service Unavailable" >&2
+  exit 1
+fi
+exec "${paths.ytdlp}" "$@"
+`)
+  fs.chmodSync(fake, 0o755)
+  events = []
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-retry-'))
+  const job = yt.createJob(short, 'mp3', 'highest', dir, none)
+  const res = await yt.runJob({ ...paths, ytdlp: fake }, job, (p) => events.push(p))
+  assert.equal(res.status, 'done', 'recovered after transient failure')
+  assert.ok(events.some((e) => e.stage === 'retrying' && e.attempt === 1), 'emitted Retrying (1/3)')
+  const out = fs.readdirSync(dir)
+  assert.ok(out.some((f) => f.endsWith('.mp3')), 'file downloaded on retry')
+  assert.ok(out.every((f) => !/\.(part|partial|ytdl|temp|download)/i.test(f)), 'no temp names left')
+  fs.rmSync(dir, { recursive: true, force: true })
+  console.log('OK retry: transient failure auto-retried and succeeded')
+}
+
+// --- retry cap: always-failing item stops after 3 retries, playlist continues
+{
+  const cnt = path.join(tmp, 'attempts')
+  const fake = path.join(tmp, 'fake-ytdlp-cap')
+  // fails transiently ONLY for the Big Buck Bunny id; other items pass through
+  fs.writeFileSync(fake, `#!/bin/sh
+case "$*" in *aqz-KE-bpKQ*)
+  echo x >> "${cnt}"
+  echo "ERROR: unable to download video data: HTTP Error 503: Service Unavailable" >&2
+  exit 1;;
+esac
+exec "${paths.ytdlp}" "$@"
+`)
+  fs.chmodSync(fake, 0o755)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-cap-'))
+  const meta = {
+    ...short, kind: 'playlist', title: 'RetryCap', count: 2,
+    entries: [
+      { id: 'aqz-KE-bpKQ', title: 'always 503', url: BBB },
+      short.entries[0]
+    ]
+  }
+  events = []
+  const t0 = Date.now()
+  const job = yt.createJob(meta, 'mp3', 'highest', dir, none)
+  const res = await yt.runJob({ ...paths, ytdlp: fake }, job, (p) => events.push(p))
+  const attempts = fs.readFileSync(cnt, 'utf8').trim().split('\n').length
+  assert.equal(attempts, 4, '1 attempt + exactly 3 retries, no infinite loop')
+  assert.ok(Date.now() - t0 >= 1500 + 3000 + 6000, 'exponential backoff waits happened')
+  assert.equal(res.status, 'partial', 'playlist continued after retries exhausted')
+  assert.equal(res.results.filter((r) => r.ok).length, 1, 'remaining item downloaded')
+  assert.deepEqual(
+    events.filter((e) => e.stage === 'retrying').map((e) => e.attempt), [1, 2, 3])
+  fs.rmSync(dir, { recursive: true, force: true })
+  console.log(`OK retry cap: 4 attempts, backoff respected, playlist continued`)
+}
+
+// --- launch cleanup removes temp leftovers, keeps real files
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-clean-'))
+  for (const f of ['a.mp4.part', 'b.part-Frag3', 'c.ytdl', 'd.temp', 'e.download']) {
+    fs.writeFileSync(path.join(dir, f), 'x')
+  }
+  fs.mkdirSync(path.join(dir, '.Old Playlist.partial'))
+  fs.writeFileSync(path.join(dir, '.Old Playlist.partial', 'file.mp4'), 'x')
+  fs.writeFileSync(path.join(dir, 'keep.mp4'), 'x')
+  fs.writeFileSync(path.join(dir, 'my.partial.notes.txt'), 'x') // not a temp suffix
+  await yt.cleanupTemps(dir)
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['keep.mp4', 'my.partial.notes.txt'])
+  fs.rmSync(dir, { recursive: true, force: true })
+  console.log('OK cleanup: temp leftovers removed, real files kept')
+}
+
+// --- zip never includes temp files
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-zip-'))
+  const meta = { ...short, kind: 'playlist', title: 'ZipHygiene', count: 1 }
+  const job = yt.createJob(meta, 'mp3', 'highest', dir, none)
+  fs.mkdirSync(job.stagingDir, { recursive: true })
+  fs.writeFileSync(path.join(job.stagingDir, '001 - done.mp3'), 'real content here')
+  for (const f of ['002 - inflight.mp3.part', '003.part-Frag9', '004.ytdl', '005.temp']) {
+    fs.writeFileSync(path.join(job.stagingDir, f), 'x')
+  }
+  const zipPath = await yt.zipStaging(job, () => {})
+  const listing = execSync(`unzip -l "${zipPath}"`).toString()
+  assert.ok(listing.includes('001 - done.mp3'))
+  for (const bad of ['.part', '.ytdl', '.temp']) assert.ok(!listing.includes(bad), `zip has no ${bad}`)
+  fs.rmSync(dir, { recursive: true, force: true })
+  console.log('OK zip hygiene: only completed files zipped')
+}
+
 // --- cancel mid-download
 {
   events = []
-  const job = yt.createJob(video, 'mp4', '1080', tmp, none)
+  // fresh dir: reusing tmp would collide with the finished 360p file and let
+  // yt-dlp short-circuit with "already downloaded" before cancel can land
+  const cancelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-cancel-'))
+  const job = yt.createJob(video, 'mp4', '360', cancelDir, none)
   const running = yt.runJob(paths, job, (p) => events.push(p))
-  await new Promise((r) => setTimeout(r, 6000))
+  // cancel as soon as real bytes are flowing — a fixed sleep races fast connections;
+  // racing against `running` keeps this from hanging if the download errors instantly
+  let timer
+  await Promise.race([
+    running,
+    new Promise((r) => {
+      timer = setInterval(() => {
+        if (events.some((e) => e.stage === 'downloading' && e.percent > 0)) r()
+      }, 100)
+    })
+  ])
+  clearInterval(timer)
   yt.cancel()
   const res = await running
   assert.equal(res.status, 'cancelled')
-  console.log('OK cancel: job reported cancelled')
+  fs.rmSync(cancelDir, { recursive: true, force: true })
+  console.log("OK cancel: job reported cancelled")
 }
 
 fs.rmSync(tmp, { recursive: true, force: true })

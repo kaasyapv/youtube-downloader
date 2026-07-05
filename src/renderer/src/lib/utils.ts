@@ -21,6 +21,11 @@ export function fmtSpeed(bps: number | null): string {
   return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${(bps / 1024).toFixed(0)} KB/s`
 }
 
+export function fmtSize(b: number): string {
+  const gb = b / 1073741824
+  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1048576))} MB`
+}
+
 export function fmtEta(s: number | null): string {
   if (s == null) return '—'
   return fmtDuration(Math.round(s)) || '0:00'

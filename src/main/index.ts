@@ -283,6 +283,8 @@ ipcMain.handle('open:external', (_e, url: string) => {
 
 app.whenReady().then(() => {
   createWindow()
+  // sweep leftovers (.part/.ytdl files, stale staging dirs) from interrupted downloads
+  yt.cleanupTemps(loadSettings().dir)
   // silent launch-time check; renderer shows "New version available" if one exists
   checkForUpdate()
     .then((info) => info && win?.webContents.send('update-available', info))

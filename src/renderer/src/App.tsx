@@ -13,7 +13,7 @@ import { Progress } from './components/ui/progress'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select'
 import { SettingsPanel } from './SettingsPanel'
 import { Widgets } from './Widgets'
-import { cn, fmtDuration, fmtEta, fmtSpeed } from './lib/utils'
+import { cn, fmtDuration, fmtEta, fmtSize, fmtSpeed } from './lib/utils'
 
 const QUALITY_LABELS: Record<string, string> = {
   highest: 'Highest', '2160': '4K', '1440': '1440p',
@@ -177,6 +177,21 @@ export default function App(): React.JSX.Element {
   const succeeded = result?.results.filter((r) => r.ok) ?? []
   const working = phase === 'working'
 
+  // duration × bitrate heuristic (MB/min); exact sizes need per-video probes
+  const MB_MIN: Record<string, number> = {
+    '360': 4, '480': 7, '720': 13, '1080': 25, '1440': 45, '2160': 85, highest: 85
+  }
+  const estBytes = meta
+    ? (meta.totalDuration / 60) * (settings.format === 'mp3' ? 2.4 : (MB_MIN[settings.quality] ?? 25)) * 1048576
+    : 0
+  const skipSummary = meta && meta.unavailable.length > 0
+    ? Object.entries(
+        meta.unavailable.reduce<Record<string, number>>(
+          (a, u) => ((a[u.reason] = (a[u.reason] ?? 0) + 1), a), {}
+        )
+      ).map(([r, n]) => `${n} ${r}`).join(' · ')
+    : ''
+
   return (
     <div className="relative h-screen overflow-hidden bg-[var(--bg)]">
       <div className="pointer-events-none absolute inset-0 bg-grid" />
@@ -305,11 +320,23 @@ export default function App(): React.JSX.Element {
                       <p className="flex items-center gap-1.5 text-sm text-[var(--muted)]">
                         <ListVideo className="h-3.5 w-3.5" /> {meta.count} videos · saved as one ZIP
                       </p>
+                      {skipSummary && (
+                        <p className="text-xs text-[#ffb86b]">
+                          {skipSummary} — will be skipped
+                        </p>
+                      )}
                       <p className="text-xs text-[var(--muted)]">
                         Playlist ID verified: <span className="font-mono">{meta.id}</span> — confirm
                         this is the one you intended.
                       </p>
                     </>
+                  )}
+                  {estBytes > 0 && (
+                    <p className="text-xs text-[var(--muted)]">
+                      {meta.kind === 'playlist' ? 'Estimated Total Size' : 'Estimated Size'}: ~
+                      {fmtSize(estBytes)} · Estimated Free Space Required: ~{fmtSize(estBytes * 2)}{' '}
+                      (estimate)
+                    </p>
                   )}
                 </div>
               </div>
@@ -406,9 +433,11 @@ export default function App(): React.JSX.Element {
                 <span className="min-w-0 truncate text-[var(--muted)]">
                   {prog?.stage === 'zipping'
                     ? 'Creating ZIP…'
-                    : prog?.stage === 'converting'
-                      ? `Converting — ${prog.itemTitle}`
-                      : prog?.itemTitle || 'Starting…'}
+                    : prog?.stage === 'retrying'
+                      ? `Retrying (${prog.attempt}/3)… — ${prog.itemTitle}`
+                      : prog?.stage === 'converting'
+                        ? `Converting — ${prog.itemTitle}`
+                        : prog?.itemTitle || 'Starting…'}
                 </span>
                 <span className="shrink-0 font-mono text-xs text-[var(--muted)]">
                   {prog?.stage === 'downloading' && `${fmtSpeed(prog.speed)} · ETA ${fmtEta(prog.eta)}`}
@@ -444,10 +473,10 @@ export default function App(): React.JSX.Element {
                 <Check className="h-6 w-6 text-emerald-400" />
               </motion.div>
               <p className="font-medium">Download Complete</p>
-              {succeeded.length > 1 && (
+              {meta?.kind === 'playlist' && (
                 <p className="-mt-2 text-sm text-[var(--muted)]">
-                  {succeeded.length} videos zipped
-                  {failed.length > 0 && ` · ${failed.length} skipped`}
+                  Downloaded: {succeeded.length} · Skipped: {meta.unavailable.length} · Failed:{' '}
+                  {failed.length}
                 </p>
               )}
               <div className="flex gap-3">
@@ -467,7 +496,8 @@ export default function App(): React.JSX.Element {
               className="flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--panel)] p-5"
             >
               <p className="text-sm font-medium">
-                {succeeded.length} of {result.results.length} downloaded — {failed.length} failed
+                Downloaded: {succeeded.length} · Skipped: {meta?.unavailable.length ?? 0} · Failed:{' '}
+                {failed.length}
               </p>
               <ul className="max-h-36 overflow-y-auto text-sm text-[var(--muted)]">
                 {failed.map((f) => (
