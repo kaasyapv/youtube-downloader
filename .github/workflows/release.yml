@@ -32,11 +32,21 @@ jobs:
       # macOS signing + notarization activate automatically once the Apple
       # secrets below are configured (see docs/SIGNING.md); until then the
       # build stays ad-hoc signed and CI remains green.
-      - run: npm run ${{ matrix.script }} -- --publish always
+      # secrets are exported only when set: an empty CSC_LINK/APPLE_ID makes
+      # electron-builder treat it as a real cert path / notarization attempt
+      - shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SEC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          SEC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          SEC_APPLE_ID: ${{ secrets.APPLE_ID }}
+          SEC_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          SEC_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$SEC_CSC_LINK" ]; then
+            export CSC_LINK="$SEC_CSC_LINK" CSC_KEY_PASSWORD="$SEC_CSC_KEY_PASSWORD"
+          fi
+          if [ -n "$SEC_APPLE_ID" ]; then
+            export APPLE_ID="$SEC_APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$SEC_APPLE_APP_SPECIFIC_PASSWORD" APPLE_TEAM_ID="$SEC_APPLE_TEAM_ID"
+          fi
+          npm run ${{ matrix.script }} -- --publish always
