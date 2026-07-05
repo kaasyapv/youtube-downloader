@@ -29,7 +29,8 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: npm run ${{ matrix.script }}
+      # --publish never: electron-builder must not self-publish on tag builds; gh uploads below
+      - run: npm run ${{ matrix.script }} -- --publish never
       # release is created before the tag is pushed; --clobber makes reruns safe
       - run: gh release upload ${{ github.ref_name }} ${{ matrix.assets }} --clobber
         env:
