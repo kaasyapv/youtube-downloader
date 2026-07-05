@@ -95,8 +95,7 @@ function flushStats(results: yt.ItemResult[]): void {
 
 // ---------------------------------------------------------------- update check
 
-// Filled in when the project is published; '' disables update checks gracefully.
-const REPO = ''
+const REPO = 'kaasyapv/youtube-downloader'
 const REPO_URL = REPO ? `https://github.com/${REPO}` : 'https://github.com'
 
 interface UpdateInfo {
