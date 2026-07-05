@@ -29,7 +29,7 @@ Windows 10/11, 64-bit. yt-dlp and FFmpeg are bundled — nothing else to install
 - Download Playlists
 - MP4
 - MP3
-- Playlist ZIP — a whole playlist saved as one archive
+- Playlist Folder — a whole playlist saved into one tidy folder
 - Thumbnail Preview
 - Real Progress — live speed, smoothed ETA, per-item and overall bars
 - Dark Desktop UI

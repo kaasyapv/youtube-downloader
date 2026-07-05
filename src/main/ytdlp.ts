@@ -5,8 +5,6 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-// @ts-ignore -- yazl ships its own loose types
-import yazl from 'yazl'
 
 export interface Paths {
   ytdlp: string
@@ -38,10 +36,12 @@ export interface Meta {
   unavailable: { id: string; reason: string }[]
   /** summed duration of downloadable entries, for size estimation */
   totalDuration: number
+  /** single video only: real stream sizes per quality key ('360'…'2160', 'highest', 'mp3') */
+  estSizes?: Record<string, number>
 }
 
 export interface Progress {
-  stage: 'starting' | 'downloading' | 'converting' | 'zipping' | 'retrying'
+  stage: 'starting' | 'downloading' | 'converting' | 'finalizing' | 'retrying'
   itemIndex: number
   itemCount: number
   itemTitle: string
@@ -51,6 +51,8 @@ export interface Progress {
   overallPercent: number
   downloadedBytes?: number
   attempt?: number
+  doneOk?: number
+  doneFail?: number
 }
 
 export interface ItemResult {
@@ -203,8 +205,35 @@ export async function fetchInfo(paths: Paths, url: string, cookies: Cookies): Pr
     count: 1,
     entries: [{ id: info.id, title: info.title ?? info.id, url }],
     unavailable: [],
-    totalDuration: info.duration ?? 0
+    totalDuration: info.duration ?? 0,
+    estSizes: estimateSizes(info.formats ?? [])
   }
+}
+
+/** Per-quality byte estimates from the actual stream list (video+audio muxed). */
+function estimateSizes(formats: Record<string, any>[]): Record<string, number> {
+  const size = (f?: Record<string, any>): number => f?.filesize ?? f?.filesize_approx ?? 0
+  const audio = formats.filter((f) => f.acodec !== 'none' && f.vcodec === 'none' && size(f) > 0)
+  const bestAudio = audio.reduce<Record<string, any> | undefined>(
+    (a, b) => ((b.abr ?? 0) > (a?.abr ?? 0) ? b : a), undefined)
+  const out: Record<string, number> = {}
+  if (bestAudio) out.mp3 = size(bestAudio)
+  const vids = formats.filter((f) => f.vcodec !== 'none' && f.acodec === 'none' && size(f) > 0)
+  for (const q of ['360', '480', '720', '1080', '1440', '2160', 'highest']) {
+    const cap = q === 'highest' ? Infinity : Number(q)
+    const best = vids
+      .filter((f) => (f.height ?? 0) <= cap)
+      .reduce<Record<string, any> | undefined>(
+        (a, b) =>
+          (b.height ?? 0) > (a?.height ?? 0) ||
+          ((b.height ?? 0) === (a?.height ?? 0) && (b.tbr ?? 0) > (a?.tbr ?? 0))
+            ? b
+            : a,
+        undefined
+      )
+    if (best) out[q] = size(best) + size(bestAudio)
+  }
+  return out
 }
 
 // ---------------------------------------------------------------- downloading
@@ -297,7 +326,7 @@ async function downloadOne(
 const PERMANENT =
   /Private video|Video unavailable|no longer available|has been removed|copyright|terminated|members.only|Sign in|age.restricted|Incomplete YouTube ID|not a valid URL|Unsupported URL/i
 const TRANSIENT =
-  /HTTP Error|Connection re(set|fused)|ECONN|ETIMEDOUT|timed? ?out|Temporary failure|IncompleteRead|ContentTooShort|EOF occurred|network|getaddrinfo|SSL|unable to download/i
+  /HTTP Error|Connection re(set|fused)|ECONN|ETIMEDOUT|timed? ?out|Temporary failure|IncompleteRead|ContentTooShort|EOF occurred|network|getaddrinfo|SSL|unable to download|forcibly closed|WinError \d+|connection.{0,10}aborted|semaphore timeout/i
 
 export function isTransient(err?: string): boolean {
   return !!err && !PERMANENT.test(err) && TRANSIENT.test(err)
@@ -406,7 +435,12 @@ export async function runJob(
   for (const entry of targets) {
     if (cancelled) break
     const idx = meta.entries.indexOf(entry)
-    const doneCount = [...job.results.values()].filter((r) => r.ok).length
+    const done = [...job.results.values()]
+    const doneCount = done.filter((r) => r.ok).length
+    const counts = {
+      doneOk: doneCount,
+      doneFail: done.filter((r) => !r.ok && r.error !== 'cancelled').length
+    }
     const template =
       meta.kind === 'playlist'
         ? path.join(
@@ -416,7 +450,7 @@ export async function runJob(
         : path.join(job.dir, '%(title).120B [%(id)s].%(ext)s')
     emit({
       stage: 'starting', itemIndex: idx + 1, itemCount: meta.count, itemTitle: entry.title,
-      percent: 0, speed: null, eta: null,
+      percent: 0, speed: null, eta: null, ...counts,
       overallPercent: Math.round((100 * doneCount) / meta.count)
     })
     const dl = (): ReturnType<typeof downloadOne> =>
@@ -425,6 +459,7 @@ export async function runJob(
         (p) =>
           emit({
             ...p,
+            ...counts,
             itemIndex: idx + 1,
             itemCount: meta.count,
             itemTitle: entry.title,
@@ -432,14 +467,14 @@ export async function runJob(
           })
       )
     let res = await dl()
-    // auto-retry transient network failures with backoff; hard cap of 3 retries
+    // auto-retry transient network failures with backoff (1s/2s/4s); hard cap of 3 retries
     for (let attempt = 1; attempt <= 3 && !cancelled && !res.ok && isTransient(res.error); attempt++) {
       emit({
         stage: 'retrying', attempt, itemIndex: idx + 1, itemCount: meta.count,
-        itemTitle: entry.title, percent: 0, speed: null, eta: null,
+        itemTitle: entry.title, percent: 0, speed: null, eta: null, ...counts,
         overallPercent: Math.round((100 * doneCount) / meta.count)
       })
-      await new Promise((r) => setTimeout(r, 1500 * 2 ** (attempt - 1)))
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)))
       if (cancelled) break
       res = await dl()
     }
@@ -460,29 +495,38 @@ export async function runJob(
   }
   if (failed.length > 0) return { status: 'partial', results, outputPath: '' }
 
-  // ZIP only once every item has succeeded (or user explicitly zips a partial set)
-  const zipPath = await zipStaging(job, emit)
-  return { status: 'done', results, outputPath: zipPath }
+  // every item succeeded: move the staging dir into place as "Playlist Name/"
+  const folder = await finalizeStaging(job, emit)
+  return { status: 'done', results, outputPath: folder }
 }
 
-/** Zip whatever finished successfully in the staging dir, then remove it. */
-export async function zipStaging(job: Job, emit: (p: Progress) => void): Promise<string> {
+/** Turn the staging dir into the final "Playlist Name/" folder: drop temp files,
+ *  rename into place (instant, same volume), unhide on Windows. */
+export async function finalizeStaging(job: Job, emit: (p: Progress) => void): Promise<string> {
   emit({
-    stage: 'zipping', itemIndex: job.meta.count, itemCount: job.meta.count,
+    stage: 'finalizing', itemIndex: job.meta.count, itemCount: job.meta.count,
     itemTitle: '', percent: 100, speed: null, eta: null, overallPercent: 100
   })
-  // only completed files: yt-dlp temp names must never reach the ZIP
-  const files = (await fsp.readdir(job.stagingDir)).filter((f) => !TEMP_FILE.test(f)).sort()
-  if (files.length === 0) throw new Error('Nothing downloaded successfully — nothing to zip')
-  const zipPath = uniquePath(path.join(job.dir, `${sanitizeName(job.meta.title)}.zip`))
-  const zip = new yazl.ZipFile()
-  // store, don't deflate: video/audio doesn't compress, and deflating GBs of mp4
-  // in single-threaded JS made big playlists look frozen at "Creating ZIP…"
-  for (const f of files) zip.addFile(path.join(job.stagingDir, f), f, { compress: false })
-  zip.end()
-  await pipeline(zip.outputStream, fs.createWriteStream(zipPath))
-  await fsp.rm(job.stagingDir, { recursive: true, force: true })
-  return zipPath
+  const all = await fsp.readdir(job.stagingDir)
+  const files = all.filter((f) => !TEMP_FILE.test(f))
+  if (files.length === 0) throw new Error('Nothing downloaded successfully — nothing to save')
+  // leftover yt-dlp temp files from failed/cancelled items must not ship
+  for (const f of all) {
+    if (TEMP_FILE.test(f)) {
+      await fsp.rm(path.join(job.stagingDir, f), { recursive: true, force: true }).catch(() => {})
+    }
+  }
+  const dest = uniquePath(path.join(job.dir, sanitizeName(job.meta.title)))
+  await fsp.rename(job.stagingDir, dest)
+  // staging was created hidden on Windows — the final folder must not inherit that
+  if (process.platform === 'win32') {
+    await new Promise<void>((resolve) => {
+      const p = spawn('attrib', ['-h', dest], { windowsHide: true })
+      p.on('close', () => resolve())
+      p.on('error', () => resolve())
+    })
+  }
+  return dest
 }
 
 // ---------------------------------------------------------------- yt-dlp self-update

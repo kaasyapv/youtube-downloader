@@ -20,6 +20,8 @@ mac:
   target:
     - dmg
     - zip
+  # no spaces: GitHub rewrites spaces in asset names to dots, breaking republish/overwrite
+  artifactName: YouTube-Downloader-${version}-${arch}.${ext}
   category: public.app-category.utilities
   # signs with Developer ID when CSC_LINK/keychain identity exists, ad-hoc otherwise;
   # notarization runs automatically when APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID are set

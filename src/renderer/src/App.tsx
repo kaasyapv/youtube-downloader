@@ -177,12 +177,15 @@ export default function App(): React.JSX.Element {
   const succeeded = result?.results.filter((r) => r.ok) ?? []
   const working = phase === 'working'
 
-  // duration × bitrate heuristic (MB/min); exact sizes need per-video probes
+  // single videos: real stream sizes from yt-dlp's format list.
+  // playlists (flat metadata, no formats): duration × bitrate heuristic (MB/min).
   const MB_MIN: Record<string, number> = {
     '360': 4, '480': 7, '720': 13, '1080': 25, '1440': 45, '2160': 85, highest: 85
   }
+  const estKey = settings.format === 'mp3' ? 'mp3' : settings.quality
   const estBytes = meta
-    ? (meta.totalDuration / 60) * (settings.format === 'mp3' ? 2.4 : (MB_MIN[settings.quality] ?? 25)) * 1048576
+    ? meta.estSizes?.[estKey] ||
+      (meta.totalDuration / 60) * (settings.format === 'mp3' ? 2.4 : (MB_MIN[settings.quality] ?? 25)) * 1048576
     : 0
   const skipSummary = meta && meta.unavailable.length > 0
     ? Object.entries(
@@ -324,7 +327,7 @@ export default function App(): React.JSX.Element {
                   {meta.kind === 'playlist' && (
                     <>
                       <p className="flex items-center gap-1.5 text-sm text-[var(--muted)]">
-                        <ListVideo className="h-3.5 w-3.5" /> {meta.count} videos · saved as one ZIP
+                        <ListVideo className="h-3.5 w-3.5" /> {meta.count} videos · saved into one folder
                       </p>
                       {skipSummary && (
                         <p className="text-xs text-[#ffb86b]">
@@ -433,12 +436,16 @@ export default function App(): React.JSX.Element {
                     </span>
                   </div>
                   <Progress value={prog?.overallPercent ?? 0} />
+                  <p className="text-xs text-[var(--muted)]">
+                    Downloaded: {prog?.doneOk ?? 0} · Skipped: {meta.unavailable.length} · Failed:{' '}
+                    {prog?.doneFail ?? 0}
+                  </p>
                 </>
               )}
               <div className="flex items-center justify-between gap-4 text-sm">
                 <span className="min-w-0 truncate text-[var(--muted)]">
-                  {prog?.stage === 'zipping'
-                    ? 'Creating ZIP…'
+                  {prog?.stage === 'finalizing'
+                    ? 'Saving folder…'
                     : prog?.stage === 'retrying'
                       ? `Retrying (${prog.attempt}/3)… — ${prog.itemTitle}`
                       : prog?.stage === 'converting'
@@ -522,7 +529,7 @@ export default function App(): React.JSX.Element {
                 </Button>
                 {succeeded.length > 0 && (
                   <Button onClick={zipPartial}>
-                    <Archive className="h-4 w-4" /> ZIP {succeeded.length} successful
+                    <Archive className="h-4 w-4" /> Save {succeeded.length} successful
                   </Button>
                 )}
               </div>

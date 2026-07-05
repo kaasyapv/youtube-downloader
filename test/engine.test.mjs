@@ -96,14 +96,15 @@ let events = []
   assert.equal(retry.status, 'partial')
   console.log('OK retry: re-ran failed item')
 
-  // zip only the successes
-  const zipPath = await yt.zipStaging(job, () => {})
-  assert.ok(fs.existsSync(zipPath))
-  assert.ok(fs.statSync(zipPath).size > 1e6, 'zip has real content')
+  // save only the successes into a plain folder
+  const folder = await yt.finalizeStaging(job, () => {})
+  assert.ok(fs.existsSync(folder), 'final folder exists')
+  assert.ok(!/\.(zip|partial)/i.test(folder), 'folder name is clean')
   assert.ok(!fs.existsSync(job.stagingDir), 'staging cleaned up')
-  const listing = execSync(`unzip -l "${zipPath}"`).toString()
-  assert.equal((listing.match(/\.mp3/g) ?? []).length, 2, 'zip has exactly the 2 successes')
-  console.log('OK zip: partial zip contains 2 mp3s ->', path.basename(zipPath))
+  const saved = fs.readdirSync(folder)
+  assert.equal(saved.filter((f) => f.endsWith('.mp3')).length, 2, 'folder has exactly the 2 successes')
+  assert.ok(saved.every((n) => fs.statSync(path.join(folder, n)).size > 1e5), 'files have real content')
+  console.log('OK save: partial save -> folder with 2 mp3s ->', path.basename(folder))
 }
 
 // --- unavailable playlist items: real playlist containing deleted/private videos
@@ -120,15 +121,18 @@ let events = []
     `(${dead.unavailable.map((u) => u.reason).join(', ')}), ${dead.count} downloadable`)
 }
 
-// --- transient-error classifier
+// --- transient-error classifier (incl. Windows error strings)
 assert.ok(yt.isTransient('unable to download video data: HTTP Error 503: Service Unavailable'))
 assert.ok(yt.isTransient('Connection reset by peer'))
 assert.ok(yt.isTransient('The read operation timed out'))
+assert.ok(yt.isTransient('[WinError 10054] An existing connection was forcibly closed by the remote host'))
+assert.ok(yt.isTransient('[WinError 10060] A connection attempt failed'))
+assert.ok(yt.isTransient('The semaphore timeout period has expired'))
 assert.ok(!yt.isTransient('Private video. Sign in if you have been granted access'))
 assert.ok(!yt.isTransient('Video unavailable. This video has been removed by the uploader'))
 assert.ok(!yt.isTransient('cancelled'))
 assert.ok(!yt.isTransient(undefined))
-console.log('OK classifier: transient vs permanent')
+console.log('OK classifier: transient vs permanent, Windows error strings')
 
 // --- auto-retry: wrapper injects one transient HTTP failure, then real yt-dlp succeeds
 const SHORT = 'https://www.youtube.com/shorts/MuzvDonoNRo'
@@ -186,7 +190,7 @@ exec "${paths.ytdlp}" "$@"
   const res = await yt.runJob({ ...paths, ytdlp: fake }, job, (p) => events.push(p))
   const attempts = fs.readFileSync(cnt, 'utf8').trim().split('\n').length
   assert.equal(attempts, 4, '1 attempt + exactly 3 retries, no infinite loop')
-  assert.ok(Date.now() - t0 >= 1500 + 3000 + 6000, 'exponential backoff waits happened')
+  assert.ok(Date.now() - t0 >= 1000 + 2000 + 4000, 'exponential backoff waits happened')
   assert.equal(res.status, 'partial', 'playlist continued after retries exhausted')
   assert.equal(res.results.filter((r) => r.ok).length, 1, 'remaining item downloaded')
   assert.deepEqual(
@@ -220,23 +224,70 @@ exec "${paths.ytdlp}" "$@"
   console.log('OK cleanup: old temp leftovers removed, fresh staging and real files kept')
 }
 
-// --- zip never includes temp files
+// --- final folder never includes temp files, staging never exposed
 {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-zip-'))
-  const meta = { ...short, kind: 'playlist', title: 'ZipHygiene', count: 1 }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-fin-'))
+  const meta = { ...short, kind: 'playlist', title: 'Folder Hygiene', count: 1 }
   const job = yt.createJob(meta, 'mp3', 'highest', dir, none)
   fs.mkdirSync(job.stagingDir, { recursive: true })
   fs.writeFileSync(path.join(job.stagingDir, '001 - done.mp3'), 'real content here')
   for (const f of ['002 - inflight.mp3.part', '003.part-Frag9', '004.ytdl', '005.temp']) {
     fs.writeFileSync(path.join(job.stagingDir, f), 'x')
   }
-  const zipPath = await yt.zipStaging(job, () => {})
-  const listing = execSync(`unzip -v "${zipPath}"`).toString()
-  assert.ok(listing.includes('001 - done.mp3'))
-  for (const bad of ['.part', '.ytdl', '.temp']) assert.ok(!listing.includes(bad), `zip has no ${bad}`)
-  assert.ok(listing.includes('Stored'), 'entries stored, not deflated (big-playlist zip stall fix)')
+  const folder = await yt.finalizeStaging(job, () => {})
+  assert.equal(path.basename(folder), 'Folder Hygiene', 'clean folder name')
+  assert.deepEqual(fs.readdirSync(folder), ['001 - done.mp3'], 'only completed files shipped')
+  assert.ok(!fs.existsSync(job.stagingDir), 'staging gone')
+  assert.ok(fs.readdirSync(dir).every((n) => !/partial|\.part$|\.ytdl$|\.temp$/i.test(n)),
+    'no temp names visible in download dir')
   fs.rmSync(dir, { recursive: true, force: true })
-  console.log('OK zip hygiene: only completed files zipped, store mode')
+  console.log('OK finalize hygiene: folder has only completed files, no temp names')
+}
+
+// --- stress: mixed playlist (4 real + permanent-fail + transient-fail) never hangs,
+//     continues to the end, reports failures, and saves the successes as a folder
+{
+  const cnt2 = path.join(tmp, 'stress-attempts')
+  const fake = path.join(tmp, 'fake-ytdlp-stress')
+  fs.writeFileSync(fake, `#!/bin/sh
+case "$*" in *dQw4w9WgXcQ*)
+  echo x >> "${cnt2}"
+  echo "ERROR: [WinError 10054] An existing connection was forcibly closed by the remote host" >&2
+  exit 1;;
+esac
+exec "${paths.ytdlp}" "$@"
+`)
+  fs.chmodSync(fake, 0o755)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-stress-'))
+  const meta = {
+    ...pl,
+    title: 'Stress Run',
+    count: 6,
+    unavailable: [{ id: 'x', reason: 'Unavailable' }],
+    entries: [
+      ...pl.entries.slice(0, 4),
+      { id: 'aaaaaaaaaaa', title: 'permanent failure', url: 'https://www.youtube.com/watch?v=aaaaaaaaaaa' },
+      { id: 'dQw4w9WgXcQ', title: 'transient failure', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }
+    ]
+  }
+  events = []
+  const t0 = Date.now()
+  const job = yt.createJob(meta, 'mp3', 'highest', dir, none)
+  const res = await yt.runJob({ ...paths, ytdlp: fake }, job, (p) => events.push(p))
+  assert.equal(res.status, 'partial', 'mixed run ends as partial, not a hang')
+  assert.equal(res.results.filter((r) => r.ok).length, 4, 'all 4 real videos downloaded')
+  const errs = res.results.filter((r) => !r.ok)
+  assert.equal(errs.length, 2, 'both failures reported')
+  assert.ok(errs.every((r) => r.error && r.error.length > 5), 'failures carry clear reasons')
+  assert.equal(fs.readFileSync(cnt2, 'utf8').trim().split('\n').length, 4,
+    'transient item: 1 try + 3 retries, then moved on')
+  assert.ok(events.some((e) => e.doneOk >= 3), 'live Downloaded count emitted')
+  assert.ok(events.some((e) => e.doneFail >= 1), 'live Failed count emitted')
+  const folder = await yt.finalizeStaging(job, () => {})
+  assert.equal(fs.readdirSync(folder).filter((f) => f.endsWith('.mp3')).length, 4)
+  fs.rmSync(dir, { recursive: true, force: true })
+  console.log(`OK stress: 6-item mixed playlist finished in ${((Date.now() - t0) / 1000).toFixed(0)}s, ` +
+    '4 saved, 2 failed with reasons, no hang')
 }
 
 // --- cancel mid-download

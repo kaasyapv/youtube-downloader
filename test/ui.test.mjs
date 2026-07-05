@@ -58,7 +58,7 @@ console.log('OK ui: downloaded through UI ->', files[0])
 await page.click('button:has-text("Download Another")')
 const PLAYLIST = 'https://www.youtube.com/playlist?list=PLpp5nYHZleJq2j-KcazFdrYafb9agDAWP'
 await page.fill('input', PLAYLIST)
-await page.waitForSelector('text=saved as one ZIP', { timeout: 60000 })
+await page.waitForSelector('text=saved into one folder', { timeout: 60000 })
 await page.waitForSelector('text=Estimated Total Size')
 const body = await page.textContent('main')
 assert.ok(body.includes('PLpp5nYHZleJq2j-KcazFdrYafb9agDAWP'), 'exact playlist ID displayed')

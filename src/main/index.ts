@@ -323,8 +323,8 @@ ipcMain.handle('download:retry', async () => {
 })
 
 ipcMain.handle('download:zip-partial', async () => {
-  if (!job) throw new Error('No download to zip')
-  return yt.zipStaging(job, emit)
+  if (!job) throw new Error('No download to save')
+  return yt.finalizeStaging(job, emit)
 })
 
 ipcMain.handle('open:path', async (_e, p: string) => {
