@@ -37,18 +37,6 @@ Windows 10/11, 64-bit. yt-dlp and FFmpeg are bundled — nothing else to install
 
 ---
 
-## 🖼 Screenshots
-
-| Home | Download in progress |
-| --- | --- |
-| ![Home screen](docs/screenshots/home.png) | ![Download in progress](docs/screenshots/download.png) |
-
-| Playlist preview | Settings |
-| --- | --- |
-| ![Playlist preview](docs/screenshots/playlist.png) | ![Settings](docs/screenshots/settings.png) |
-
----
-
 ## 🚀 Installation
 
 **macOS**
