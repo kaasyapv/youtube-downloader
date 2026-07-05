@@ -26,11 +26,12 @@ win:
   extraResources:
     - from: resources/bin/win32-x64
       to: bin
+# versionless artifact names so releases/latest/download/ links never go stale
 nsis:
   oneClick: true
-  artifactName: ${productName} Setup ${version}.${ext}
+  artifactName: YouTube-Downloader-Setup.${ext}
 portable:
-  artifactName: ${productName} Portable ${version}.${ext}
+  artifactName: YouTube-Downloader-Portable.${ext}
 dmg:
-  artifactName: ${productName} ${version}.${ext}
+  artifactName: YouTube-Downloader.${ext}
 npmRebuild: false

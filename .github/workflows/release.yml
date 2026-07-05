@@ -1,0 +1,36 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: # run with --ref <tag> to (re)build an existing release
+
+permissions:
+  contents: write
+
+env:
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            script: dist:mac
+            assets: dist/YouTube-Downloader.dmg
+          - os: windows-latest
+            script: dist:win
+            assets: dist/YouTube-Downloader-Setup.exe dist/YouTube-Downloader-Portable.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run ${{ matrix.script }}
+      # release is created before the tag is pushed; --clobber makes reruns safe
+      - run: gh release upload ${{ github.ref_name }} ${{ matrix.assets }} --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

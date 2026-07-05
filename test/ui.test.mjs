@@ -19,7 +19,7 @@ const userData = path.join(os.homedir(), 'Library', 'Application Support', 'YouT
 fs.mkdirSync(userData, { recursive: true })
 fs.writeFileSync(
   path.join(userData, 'settings.json'),
-  JSON.stringify({ dir: dlDir, format: 'mp4', quality: '360', theme: 'dark', cookieMode: 'none', cookiesFile: '' })
+  JSON.stringify({ dir: dlDir, format: 'mp4', quality: '1080', theme: 'dark', cookieMode: 'none', cookiesFile: '' })
 )
 
 // APP_EXE=<path to packaged binary> runs the same checks against the built .app
@@ -41,6 +41,9 @@ console.log('OK ui: Short metadata + thumbnail shown')
 
 // --- download through the UI, real progress, done state
 await page.click('button:has-text("Download MP4")')
+await page.waitForSelector('button:has-text("Cancel")', { timeout: 60000 })
+await page.waitForSelector('text=ETA', { timeout: 30000 }).catch(() => {})
+await page.screenshot({ path: path.join(shots, '2b-progress.png') })
 await page.waitForSelector('text=Download Complete', { timeout: 300000 })
 await page.screenshot({ path: path.join(shots, '3-complete.png') })
 const files = fs.readdirSync(dlDir).filter((f) => f.endsWith('.mp4'))
