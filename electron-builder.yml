@@ -1,0 +1,36 @@
+appId: com.kaasyap.youtube-downloader
+productName: YouTube Downloader
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**
+  - package.json
+  - "!node_modules/**"
+asar: true
+mac:
+  target:
+    - dmg
+    - zip
+  identity: null
+  category: public.app-category.utilities
+  extraResources:
+    - from: resources/bin/darwin-arm64
+      to: bin
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  extraResources:
+    - from: resources/bin/win32-x64
+      to: bin
+nsis:
+  oneClick: true
+  artifactName: ${productName} Setup ${version}.${ext}
+portable:
+  artifactName: ${productName} Portable ${version}.${ext}
+dmg:
+  artifactName: ${productName} ${version}.${ext}
+npmRebuild: false
