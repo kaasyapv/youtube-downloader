@@ -8,12 +8,21 @@ files:
   - package.json
   - "!node_modules/**"
 asar: true
+# embeds app-update.yml so electron-updater knows where releases live
+publish:
+  provider: github
+  owner: kaasyapv
+  repo: youtube-downloader
 mac:
   target:
     - dmg
     - zip
-  identity: null
   category: public.app-category.utilities
+  # signs with Developer ID when CSC_LINK/keychain identity exists, ad-hoc otherwise;
+  # notarization runs automatically when APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID are set
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
   extraResources:
     - from: resources/bin/darwin-arm64
       to: bin

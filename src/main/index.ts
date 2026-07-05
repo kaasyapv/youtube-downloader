@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, clipboard } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import path from 'node:path'
 import fs from 'node:fs'
 import * as yt from './ytdlp'
@@ -100,6 +101,7 @@ const REPO_URL = REPO ? `https://github.com/${REPO}` : 'https://github.com'
 
 interface UpdateInfo {
   version: string
+  notes: string
   url: string
   assets: { name: string; url: string }[]
 }
@@ -123,11 +125,17 @@ async function checkForUpdate(): Promise<UpdateInfo | null> {
   const rel = (await res.json()) as {
     tag_name: string
     html_url: string
+    body?: string
     assets: { name: string; url: string }[]
   }
   const current = process.env.UPDATE_TEST_CURRENT ?? app.getVersion()
   if (!newer(rel.tag_name, current)) return null
-  return { version: rel.tag_name.replace(/^v/, ''), url: rel.html_url, assets: rel.assets }
+  return {
+    version: rel.tag_name.replace(/^v/, ''),
+    notes: (rel.body ?? '').trim(),
+    url: rel.html_url,
+    assets: rel.assets
+  }
 }
 
 /** Download the right installer asset and open it. NSIS one-click updates the
@@ -155,6 +163,58 @@ async function installUpdate(info: UpdateInfo): Promise<void> {
   await shell.openPath(dest)
   if (process.platform === 'win32') app.quit()
 }
+
+// ---------------------------------------------------------------- electron-updater
+
+// electron-updater is the real install path (download -> sha512 verify -> install ->
+// restart). The GitHub-API `installUpdate` above remains the fallback for unsigned
+// macOS builds, where Squirrel.Mac refuses to swap the app.
+autoUpdater.autoDownload = false
+autoUpdater.logger = console
+if (process.env.UPDATE_TEST_DEV) autoUpdater.forceDevUpdateConfig = true
+
+function updaterAuth(): void {
+  // private repo: releases need auth; users set githubToken in settings.json
+  const token = loadSettings().githubToken || process.env.GH_TOKEN || ''
+  if (token) {
+    const [owner, repo] = REPO.split('/')
+    autoUpdater.setFeedURL({ provider: 'github', owner, repo, private: true, token })
+  }
+}
+
+function notesText(rn: unknown): string {
+  if (typeof rn === 'string') return rn.replace(/<[^>]+>/g, '').trim()
+  if (Array.isArray(rn)) {
+    return rn.map((n) => n?.note ?? '').join('\n').replace(/<[^>]+>/g, '').trim()
+  }
+  return ''
+}
+
+/** Check via electron-updater; null when already up to date. */
+async function checkForUpdate2(): Promise<UpdateInfo | null> {
+  updaterAuth()
+  const r = await autoUpdater.checkForUpdates()
+  if (!r) return null
+  const current = process.env.UPDATE_TEST_CURRENT ?? app.getVersion()
+  if (!newer(r.updateInfo.version, current)) return null
+  return {
+    version: r.updateInfo.version,
+    notes: notesText(r.updateInfo.releaseNotes),
+    url: `${REPO_URL}/releases/latest`,
+    assets: []
+  }
+}
+
+autoUpdater.on('update-downloaded', async () => {
+  const { response } = await dialog.showMessageBox(win!, {
+    type: 'info',
+    message: 'Update downloaded',
+    detail: 'Restart YouTube Downloader to finish installing the update?',
+    buttons: ['Restart Now', 'Later'],
+    defaultId: 0
+  })
+  if (response === 0) autoUpdater.quitAndInstall()
+})
 
 // ---------------------------------------------------------------- window
 
@@ -273,8 +333,18 @@ ipcMain.handle('stats:get', () => {
   const { date, bytes, files } = stats
   return date === today() ? { bytes, files } : { bytes: 0, files: 0 }
 })
-ipcMain.handle('update:check', () => checkForUpdate())
-ipcMain.handle('update:install', (_e, info: UpdateInfo) => installUpdate(info))
+ipcMain.handle('update:check', () => checkForUpdate2().catch(() => checkForUpdate()))
+ipcMain.handle('update:install', async (_e, info: UpdateInfo) => {
+  try {
+    updaterAuth()
+    if (!autoUpdater.forceDevUpdateConfig) await autoUpdater.checkForUpdates() // ensure cached result
+    await autoUpdater.downloadUpdate() // sha512-verified; 'update-downloaded' asks to restart
+  } catch (e) {
+    console.error('electron-updater install failed, falling back to manual asset:', e)
+    const legacy = info.assets.length ? info : await checkForUpdate()
+    if (legacy) await installUpdate(legacy)
+  }
+})
 ipcMain.handle('open:external', (_e, url: string) => {
   if (url === REPO_URL) shell.openExternal(url)
 })
@@ -286,7 +356,8 @@ app.whenReady().then(() => {
   // sweep leftovers (.part/.ytdl files, stale staging dirs) from interrupted downloads
   yt.cleanupTemps(loadSettings().dir)
   // silent launch-time check; renderer shows "New version available" if one exists
-  checkForUpdate()
+  checkForUpdate2()
+    .catch(() => checkForUpdate())
     .then((info) => info && win?.webContents.send('update-available', info))
     .catch(() => {})
 })

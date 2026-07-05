@@ -3,6 +3,7 @@ import type { Settings } from '../../main/index'
 
 export interface UpdateInfo {
   version: string
+  notes: string
   url: string
   assets: { name: string; url: string }[]
 }

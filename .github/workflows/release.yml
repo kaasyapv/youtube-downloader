@@ -18,10 +18,8 @@ jobs:
         include:
           - os: macos-latest
             script: dist:mac
-            assets: dist/YouTube-Downloader.dmg
           - os: windows-latest
             script: dist:win
-            assets: dist/YouTube-Downloader-Setup.exe dist/YouTube-Downloader-Portable.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -29,9 +27,16 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      # --publish never: electron-builder must not self-publish on tag builds; gh uploads below
-      - run: npm run ${{ matrix.script }} -- --publish never
-      # release is created before the tag is pushed; --clobber makes reruns safe
-      - run: gh release upload ${{ github.ref_name }} ${{ matrix.assets }} --clobber
+      # --publish always uploads installers AND latest*.yml update metadata,
+      # which electron-updater in the app reads to detect and install updates.
+      # macOS signing + notarization activate automatically once the Apple
+      # secrets below are configured (see docs/SIGNING.md); until then the
+      # build stays ad-hoc signed and CI remains green.
+      - run: npm run ${{ matrix.script }} -- --publish always
         env:
           GH_TOKEN: ${{ github.token }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

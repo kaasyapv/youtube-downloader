@@ -233,9 +233,15 @@ export default function App(): React.JSX.Element {
               transition={{ duration: 0.2 }}
               className="flex items-center justify-between gap-3 rounded-xl border border-[var(--red)]/25 bg-[var(--red)]/8 px-4 py-2.5"
             >
-              <p className="text-sm">
-                New version available <span className="font-mono text-[var(--muted)]">v{update.version}</span>
-              </p>
+              <div className="min-w-0">
+                <p className="text-sm">New version available</p>
+                <p className="font-mono text-xs text-[var(--muted)]">
+                  Current: v{versions.app} → Latest: v{update.version}
+                </p>
+                {update.notes && (
+                  <p className="mt-0.5 line-clamp-2 text-xs text-[var(--muted)]">{update.notes}</p>
+                )}
+              </div>
               <div className="flex shrink-0 gap-2">
                 <Button size="sm" onClick={() => window.api.updateInstall(update)}>
                   Update Now

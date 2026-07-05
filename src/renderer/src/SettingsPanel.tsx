@@ -116,13 +116,24 @@ export function SettingsPanel({
 
         <div className="flex flex-col gap-2.5">
           <label className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">
-            Downloader engine
+            Downloader
           </label>
           <Button variant="secondary" size="sm" onClick={updateYtdlp} disabled={updating}>
             <RefreshCw className={`h-3.5 w-3.5 ${updating ? 'animate-spin' : ''}`} />
             {updating ? 'Updating…' : 'Update Downloader'}
           </Button>
           {updateMsg && <p className="text-xs text-[var(--muted)]">{updateMsg}</p>}
+        </div>
+
+        <div className="flex flex-col gap-2.5">
+          <label className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">
+            Application
+          </label>
+          <Button variant="secondary" size="sm" onClick={checkAppUpdate} disabled={checking}>
+            <RefreshCw className={`h-3.5 w-3.5 ${checking ? 'animate-spin' : ''}`} />
+            {checking ? 'Checking…' : 'Check for Updates'}
+          </Button>
+          {checkMsg && <p className="text-xs text-[var(--muted)]">{checkMsg}</p>}
         </div>
 
         {/* Advanced: login for private videos, hidden by default */}
@@ -196,11 +207,6 @@ export function SettingsPanel({
               v{versions.app} · yt-dlp {versions.ytdlp}
             </span>
           </div>
-          <Button variant="secondary" size="sm" onClick={checkAppUpdate} disabled={checking}>
-            <RefreshCw className={`h-3.5 w-3.5 ${checking ? 'animate-spin' : ''}`} />
-            {checking ? 'Checking…' : 'Check for Updates'}
-          </Button>
-          {checkMsg && <p className="text-xs text-[var(--muted)]">{checkMsg}</p>}
         </div>
       </motion.aside>
     </>
