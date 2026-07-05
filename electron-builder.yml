@@ -8,11 +8,14 @@ files:
   - package.json
   - "!node_modules/**"
 asar: true
-# embeds app-update.yml so electron-updater knows where releases live
+# embeds app-update.yml so electron-updater knows where releases live.
+# releaseType: release -> upload into the existing published release for the tag
+# (the default "draft" refuses to touch an already-published release and skips uploads)
 publish:
   provider: github
   owner: kaasyapv
   repo: youtube-downloader
+  releaseType: release
 mac:
   target:
     - dmg
