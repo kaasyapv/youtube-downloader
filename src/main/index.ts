@@ -205,6 +205,17 @@ async function checkForUpdate2(): Promise<UpdateInfo | null> {
   }
 }
 
+// Squirrel.Mac rejects unsigned apps *after* download, via a late error event the
+// invoke handler can't catch — fall back to downloading and opening the DMG once.
+let fellBack = false
+autoUpdater.on('error', async (e) => {
+  if (fellBack || !/code signature|SQRLCodeSignature/i.test(String(e))) return
+  fellBack = true
+  console.error('unsigned build cannot self-install; opening DMG instead:', String(e))
+  const info = await checkForUpdate().catch(() => null)
+  if (info) await installUpdate(info).catch(() => {})
+})
+
 autoUpdater.on('update-downloaded', async () => {
   const { response } = await dialog.showMessageBox(win!, {
     type: 'info',

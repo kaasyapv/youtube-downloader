@@ -8,9 +8,12 @@ electron-builder invalidated when it repacked `Contents/Resources`
 (`codesign` verdict: *"code has no resources but signature indicates they must
 be present"*). Gatekeeper reports a quarantined app with a broken signature as
 **"damaged and can't be opened."** The old `identity: null` config skipped
-re-signing. That line is now removed, so every build is at least re-signed
-ad-hoc (opens via right-click → Open); proper distribution needs the steps
-below.
+re-signing; it is removed, but electron-builder still skips signing when no
+identity exists, so downloaded builds remain Gatekeeper-blocked until real
+credentials are configured (workaround for testers:
+`xattr -dr com.apple.quarantine "/Applications/YouTube Downloader.app"`).
+Proper distribution needs the steps below — there is no unsigned shortcut on
+modern macOS.
 
 ## What you need from Apple
 
